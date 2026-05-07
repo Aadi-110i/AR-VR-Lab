@@ -15,15 +15,13 @@ class ImmersiveApp {
     }
 
     init() {
-        // Scene
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x222222);
 
-        // Camera
         this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
-        this.camera.position.set(0, 1.6, 5); 
+        // Initial 3rd person camera offset
+        this.camera.position.set(0, 3, 6); 
 
-        // Renderer
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -31,27 +29,23 @@ class ImmersiveApp {
         this.renderer.xr.enabled = true;
         document.body.appendChild(this.renderer.domElement);
 
-        // Controls
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
-        this.controls.target.set(0, 1.6, 0);
+        this.controls.minDistance = 2;
+        this.controls.maxDistance = 15;
+        this.controls.enablePan = false;
         
-        // Movement State
         this.keys = { w: false, a: false, s: false, d: false };
-        this.moveSpeed = 0.15;
+        this.moveSpeed = 0.1;
+        this.rotationSpeed = 0.05;
 
-        // UI Elements
+        this.loadingManager = new THREE.LoadingManager();
         this.progressElement = document.getElementById('progress');
         this.loadingScreen = document.getElementById('loading-screen');
 
-        // Loading Manager
-        this.loadingManager = new THREE.LoadingManager();
-        
         this.loadingManager.onProgress = (url, loaded, total) => {
             const progress = (loaded / total) * 100;
-            if (this.progressElement) {
-                this.progressElement.style.width = `${progress}%`;
-            }
+            if (this.progressElement) this.progressElement.style.width = `${progress}%`;
         };
 
         this.loadingManager.onLoad = () => {
@@ -63,7 +57,6 @@ class ImmersiveApp {
             }
         };
 
-        // Lighting (Crucial for GLB models)
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
         this.scene.add(ambientLight);
 
@@ -78,7 +71,6 @@ class ImmersiveApp {
         texture.colorSpace = THREE.SRGBColorSpace;
         texture.wrapS = THREE.RepeatWrapping;
         texture.wrapT = THREE.RepeatWrapping;
-        texture.repeat.set(1, 1); 
 
         const sphereGeo = new THREE.SphereGeometry(500, 64, 32);
         const sphereMat = new THREE.MeshBasicMaterial({
@@ -97,33 +89,27 @@ class ImmersiveApp {
         loader.load(modelPath, (gltf) => {
             this.character = gltf.scene;
             
-            // Center and scale the character
             const box = new THREE.Box3().setFromObject(this.character);
             const size = box.getSize(new THREE.Vector3());
             const center = box.getCenter(new THREE.Vector3());
 
-            // Reset position to origin
+            // Center geometry locally
             this.character.position.x += (this.character.position.x - center.x);
             this.character.position.y += (this.character.position.y - center.y);
             this.character.position.z += (this.character.position.z - center.z);
 
-            // Scale to a reasonable height (approx 1.7m)
             const scale = 1.7 / size.y;
             this.character.scale.setScalar(scale);
             
-            // Place on the "floor"
+            // Place on ground
             this.character.position.y = 0;
-
             this.scene.add(this.character);
             
-            // If the model has animations, we could play them here
             if (gltf.animations && gltf.animations.length > 0) {
                 this.mixer = new THREE.AnimationMixer(this.character);
-                const action = this.mixer.clipAction(gltf.animations[0]);
-                action.play();
+                this.idleAction = this.mixer.clipAction(gltf.animations[0]);
+                this.idleAction.play();
             }
-        }, undefined, (error) => {
-            console.error('An error happened while loading the model:', error);
         });
     }
 
@@ -153,41 +139,60 @@ class ImmersiveApp {
         });
     }
 
-    updateMovement() {
+    updateThirdPerson() {
+        if (!this.character) return;
+
         const direction = new THREE.Vector3();
-        const frontVector = new THREE.Vector3();
-        const sideVector = new THREE.Vector3();
+        
+        // Get forward and side vectors relative to the CAMERA orientation
+        // This makes "Forward" (W) always move the girl away from the camera
+        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+        forward.y = 0;
+        forward.normalize();
+        
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+        right.y = 0;
+        right.normalize();
 
-        this.camera.getWorldDirection(frontVector);
-        frontVector.y = 0;
-        frontVector.normalize();
-
-        sideVector.crossVectors(this.camera.up, frontVector).normalize();
-
-        if (this.keys.w) direction.add(frontVector);
-        if (this.keys.s) direction.sub(frontVector);
-        if (this.keys.a) direction.add(sideVector);
-        if (this.keys.d) direction.sub(sideVector);
+        if (this.keys.w) direction.add(forward);
+        if (this.keys.s) direction.sub(forward);
+        if (this.keys.a) direction.sub(right);
+        if (this.keys.d) direction.add(right);
 
         if (direction.length() > 0) {
-            direction.normalize().multiplyScalar(this.moveSpeed);
-            this.camera.position.add(direction);
+            direction.normalize();
             
-            const dist = this.camera.position.length();
-            if (dist > 450) this.camera.position.setLength(450);
+            // Rotate character to face movement direction
+            const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction);
+            this.character.quaternion.slerp(targetQuaternion, this.rotationSpeed);
             
-            this.controls.target.add(direction);
+            // Move character
+            this.character.position.addScaledVector(direction, this.moveSpeed);
+            
+            // Stay within sphere
+            if (this.character.position.length() > 450) {
+                this.character.position.setLength(450);
+            }
         }
+
+        // Camera follow logic
+        // We update the OrbitControls target to the girl's position
+        // This keeps her in the center of the frame as she moves
+        const charPos = this.character.position.clone();
+        charPos.y += 1.6; // Target her head height
+        
+        const delta = charPos.clone().sub(this.controls.target);
+        this.camera.position.add(delta);
+        this.controls.target.copy(charPos);
     }
 
     animate() {
         const clock = new THREE.Clock();
         this.renderer.setAnimationLoop(() => {
             const delta = clock.getDelta();
-            
             if (this.mixer) this.mixer.update(delta);
             
-            this.updateMovement();
+            this.updateThirdPerson();
             this.controls.update();
             this.renderer.render(this.scene, this.camera);
         });
