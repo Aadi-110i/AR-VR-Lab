@@ -35,10 +35,8 @@ class ImmersiveApp {
         this.controls.enablePan = false;
         
         this.keys = { w: false, a: false, s: false, d: false };
-        this.moveSpeed = 0.1;
-        this.rotationSpeed = 0.05;
+        this.rotationSpeed = 0.08;
 
-        // Animation State
         this.mixer = null;
         this.actions = {};
         this.activeAction = null;
@@ -106,31 +104,39 @@ class ImmersiveApp {
             this.character.position.y = 0;
             this.scene.add(this.character);
             
-            // Setup Animations
             if (gltf.animations && gltf.animations.length > 0) {
                 this.mixer = new THREE.AnimationMixer(this.character);
                 
-                gltf.animations.forEach((clip, index) => {
-                    // Try to find idle and walk by name, otherwise fallback to index
+                console.log("Animations found:", gltf.animations.map(a => a.name));
+
+                gltf.animations.forEach((clip) => {
                     let name = clip.name.toLowerCase();
                     if (name.includes('idle')) name = 'idle';
                     else if (name.includes('walk') || name.includes('run')) name = 'walk';
-                    else name = index === 0 ? 'idle' : 'walk';
-
+                    
                     const action = this.mixer.clipAction(clip);
-                    action.setLoop(THREE.LoopRepeat); // Ensure it loops
-                    action.clampWhenFinished = false; // Don't stop at end
+                    action.setLoop(THREE.LoopRepeat);
+                    action.clampWhenFinished = false;
+                    
+                    // Specifically check for 'walk' and 'idle'
                     this.actions[name] = action;
                 });
 
-                // Set initial action
-                this.activeAction = this.actions['idle'] || Object.values(this.actions)[0];
-                if (this.activeAction) this.activeAction.play();
+                // Manual assignment if names are generic
+                if (!this.actions['idle']) this.actions['idle'] = this.mixer.clipAction(gltf.animations[0]);
+                if (!this.actions['walk'] && gltf.animations.length > 1) {
+                    this.actions['walk'] = this.mixer.clipAction(gltf.animations[1]);
+                } else if (!this.actions['walk']) {
+                    this.actions['walk'] = this.actions['idle'];
+                }
+
+                this.activeAction = this.actions['idle'];
+                this.activeAction.play();
             }
         });
     }
 
-    fadeToAction(name, duration = 0.5) {
+    fadeToAction(name, duration = 0.2) {
         const nextAction = this.actions[name];
         if (nextAction && nextAction !== this.activeAction) {
             const prevAction = this.activeAction;
@@ -178,8 +184,16 @@ class ImmersiveApp {
     updateThirdPerson() {
         if (!this.character) return;
 
+        // Force Hips/Root to center to kill root motion jump
+        this.character.traverse((child) => {
+            if (child.isBone && (child.name.toLowerCase().includes('hips') || child.name.toLowerCase().includes('root'))) {
+                child.position.x = 0;
+                child.position.z = 0;
+            }
+        });
+        this.character.position.set(0, 0, 0);
+
         const direction = new THREE.Vector3();
-        
         const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
         forward.y = 0;
         forward.normalize();
@@ -188,46 +202,22 @@ class ImmersiveApp {
         right.y = 0;
         right.normalize();
 
-        if (this.keys.w) direction.add(forward);
-        if (this.keys.s) direction.sub(forward);
-        if (this.keys.a) direction.sub(right);
-        if (this.keys.d) direction.add(right);
+        let isWalking = false;
+        if (this.keys.w) { direction.add(forward); isWalking = true; }
+        if (this.keys.s) { direction.sub(forward); isWalking = true; }
+        if (this.keys.a) { direction.sub(right); isWalking = true; }
+        if (this.keys.d) { direction.add(right); isWalking = true; }
 
-        if (direction.length() > 0) {
+        if (isWalking) {
             direction.normalize();
-            
             const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction);
             this.character.quaternion.slerp(targetQuaternion, this.rotationSpeed);
-            
-            this.character.position.addScaledVector(direction, this.moveSpeed);
-            
-            if (this.character.position.length() > 450) {
-                this.character.position.setLength(450);
-            }
-
-            // Switch to walk animation if moving
-            if (this.actions['walk']) this.fadeToAction('walk');
-            else if (Object.keys(this.actions).length > 1) {
-                // If 'walk' isn't explicitly found, try the second animation
-                const names = Object.keys(this.actions);
-                this.fadeToAction(names[1]);
-            }
+            this.fadeToAction('walk', 0.2);
         } else {
-            // Switch back to idle if stopped
-            if (this.actions['idle']) this.fadeToAction('idle');
-            else if (Object.keys(this.actions).length > 0) {
-                // If 'idle' isn't explicitly found, try the first animation
-                const names = Object.keys(this.actions);
-                this.fadeToAction(names[0]);
-            }
+            this.fadeToAction('idle', 0.2);
         }
 
-        const charPos = this.character.position.clone();
-        charPos.y += 1.6; 
-        
-        const delta = charPos.clone().sub(this.controls.target);
-        this.camera.position.add(delta);
-        this.controls.target.copy(charPos);
+        this.controls.target.set(0, 1.6, 0);
     }
 
     animate() {
