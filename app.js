@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
 
@@ -7,6 +8,7 @@ class ImmersiveApp {
     constructor() {
         this.init();
         this.createEnvironment();
+        this.loadCharacter();
         this.setupXR();
         this.addEventListeners();
         this.animate();
@@ -15,11 +17,11 @@ class ImmersiveApp {
     init() {
         // Scene
         this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x222222); // Gray background to confirm rendering
+        this.scene.background = new THREE.Color(0x222222);
 
         // Camera
         this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
-        this.camera.position.set(0, 0, 10); 
+        this.camera.position.set(0, 1.6, 5); 
 
         // Renderer
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -32,10 +34,11 @@ class ImmersiveApp {
         // Controls
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
+        this.controls.target.set(0, 1.6, 0);
         
         // Movement State
         this.keys = { w: false, a: false, s: false, d: false };
-        this.moveSpeed = 0.2;
+        this.moveSpeed = 0.15;
 
         // UI Elements
         this.progressElement = document.getElementById('progress');
@@ -49,11 +52,9 @@ class ImmersiveApp {
             if (this.progressElement) {
                 this.progressElement.style.width = `${progress}%`;
             }
-            console.log(`Loading: ${progress}%`);
         };
 
         this.loadingManager.onLoad = () => {
-            console.log('All assets loaded!');
             if (this.loadingScreen) {
                 this.loadingScreen.style.opacity = '0';
                 setTimeout(() => {
@@ -62,28 +63,23 @@ class ImmersiveApp {
             }
         };
 
-        this.loadingManager.onError = (url) => {
-            console.error('Error loading:', url);
-            // Even on error, hide the loading screen so we can see the fallback
-            if (this.loadingScreen) this.loadingScreen.style.display = 'none';
-        };
+        // Lighting (Crucial for GLB models)
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+        this.scene.add(ambientLight);
 
-        // Add a fallback red cube to verify rendering is working
-        const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-        const boxMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-        this.cube = new THREE.Mesh(boxGeo, boxMat);
-        this.scene.add(this.cube);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(5, 10, 7.5);
+        this.scene.add(dirLight);
     }
 
     createEnvironment() {
         const textureLoader = new THREE.TextureLoader(this.loadingManager);
-        
-        // In Vite, if movmjngq.png is in the same directory as app.js (root), 
-        // we should reference it correctly.
         const texture = textureLoader.load('./movmjngq.png');
         texture.colorSpace = THREE.SRGBColorSpace;
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        texture.repeat.set(1, 1); 
 
-        // Massive Sphere
         const sphereGeo = new THREE.SphereGeometry(500, 64, 32);
         const sphereMat = new THREE.MeshBasicMaterial({
             map: texture,
@@ -92,6 +88,43 @@ class ImmersiveApp {
 
         this.environment = new THREE.Mesh(sphereGeo, sphereMat);
         this.scene.add(this.environment);
+    }
+
+    loadCharacter() {
+        const loader = new GLTFLoader(this.loadingManager);
+        const modelPath = './a45b17d50049eb9f0ad9ae4f628d55e2.glb';
+
+        loader.load(modelPath, (gltf) => {
+            this.character = gltf.scene;
+            
+            // Center and scale the character
+            const box = new THREE.Box3().setFromObject(this.character);
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
+
+            // Reset position to origin
+            this.character.position.x += (this.character.position.x - center.x);
+            this.character.position.y += (this.character.position.y - center.y);
+            this.character.position.z += (this.character.position.z - center.z);
+
+            // Scale to a reasonable height (approx 1.7m)
+            const scale = 1.7 / size.y;
+            this.character.scale.setScalar(scale);
+            
+            // Place on the "floor"
+            this.character.position.y = 0;
+
+            this.scene.add(this.character);
+            
+            // If the model has animations, we could play them here
+            if (gltf.animations && gltf.animations.length > 0) {
+                this.mixer = new THREE.AnimationMixer(this.character);
+                const action = this.mixer.clipAction(gltf.animations[0]);
+                action.play();
+            }
+        }, undefined, (error) => {
+            console.error('An error happened while loading the model:', error);
+        });
     }
 
     setupXR() {
@@ -139,16 +172,21 @@ class ImmersiveApp {
         if (direction.length() > 0) {
             direction.normalize().multiplyScalar(this.moveSpeed);
             this.camera.position.add(direction);
+            
+            const dist = this.camera.position.length();
+            if (dist > 450) this.camera.position.setLength(450);
+            
             this.controls.target.add(direction);
         }
     }
 
     animate() {
+        const clock = new THREE.Clock();
         this.renderer.setAnimationLoop(() => {
-            if (this.cube) {
-                this.cube.rotation.x += 0.01;
-                this.cube.rotation.y += 0.01;
-            }
+            const delta = clock.getDelta();
+            
+            if (this.mixer) this.mixer.update(delta);
+            
             this.updateMovement();
             this.controls.update();
             this.renderer.render(this.scene, this.camera);
