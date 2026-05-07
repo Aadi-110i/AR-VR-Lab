@@ -19,7 +19,6 @@ class ImmersiveApp {
         this.scene.background = new THREE.Color(0x222222);
 
         this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
-        // Initial 3rd person camera offset
         this.camera.position.set(0, 3, 6); 
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -38,6 +37,11 @@ class ImmersiveApp {
         this.keys = { w: false, a: false, s: false, d: false };
         this.moveSpeed = 0.1;
         this.rotationSpeed = 0.05;
+
+        // Animation State
+        this.mixer = null;
+        this.actions = {};
+        this.activeAction = null;
 
         this.loadingManager = new THREE.LoadingManager();
         this.progressElement = document.getElementById('progress');
@@ -84,7 +88,8 @@ class ImmersiveApp {
 
     loadCharacter() {
         const loader = new GLTFLoader(this.loadingManager);
-        const modelPath = './a45b17d50049eb9f0ad9ae4f628d55e2.glb';
+        // Using the new walking model
+        const modelPath = './96aafe422795b65eb2f93e5ce46da1f4.glb';
 
         loader.load(modelPath, (gltf) => {
             this.character = gltf.scene;
@@ -93,24 +98,40 @@ class ImmersiveApp {
             const size = box.getSize(new THREE.Vector3());
             const center = box.getCenter(new THREE.Vector3());
 
-            // Center geometry locally
             this.character.position.x += (this.character.position.x - center.x);
             this.character.position.y += (this.character.position.y - center.y);
             this.character.position.z += (this.character.position.z - center.z);
 
             const scale = 1.7 / size.y;
             this.character.scale.setScalar(scale);
-            
-            // Place on ground
             this.character.position.y = 0;
             this.scene.add(this.character);
             
+            // Setup Animations
             if (gltf.animations && gltf.animations.length > 0) {
                 this.mixer = new THREE.AnimationMixer(this.character);
-                this.idleAction = this.mixer.clipAction(gltf.animations[0]);
-                this.idleAction.play();
+                
+                // Assuming first animation is idle and second is walking
+                // Or if it only has one, it might be the walking one.
+                gltf.animations.forEach((clip, index) => {
+                    const name = index === 0 ? 'idle' : 'walk'; // Fallback naming
+                    this.actions[name] = this.mixer.clipAction(clip);
+                });
+
+                // Default to first animation
+                this.activeAction = this.actions['idle'] || Object.values(this.actions)[0];
+                this.activeAction.play();
             }
         });
+    }
+
+    fadeToAction(name, duration = 0.2) {
+        const nextAction = this.actions[name];
+        if (nextAction && nextAction !== this.activeAction) {
+            this.activeAction.fadeOut(duration);
+            nextAction.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(duration).play();
+            this.activeAction = nextAction;
+        }
     }
 
     setupXR() {
@@ -144,8 +165,6 @@ class ImmersiveApp {
 
         const direction = new THREE.Vector3();
         
-        // Get forward and side vectors relative to the CAMERA orientation
-        // This makes "Forward" (W) always move the girl away from the camera
         const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
         forward.y = 0;
         forward.normalize();
@@ -162,24 +181,24 @@ class ImmersiveApp {
         if (direction.length() > 0) {
             direction.normalize();
             
-            // Rotate character to face movement direction
             const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction);
             this.character.quaternion.slerp(targetQuaternion, this.rotationSpeed);
             
-            // Move character
             this.character.position.addScaledVector(direction, this.moveSpeed);
             
-            // Stay within sphere
             if (this.character.position.length() > 450) {
                 this.character.position.setLength(450);
             }
+
+            // Switch to walk animation if moving
+            if (this.actions['walk']) this.fadeToAction('walk');
+        } else {
+            // Switch back to idle if stopped
+            if (this.actions['idle']) this.fadeToAction('idle');
         }
 
-        // Camera follow logic
-        // We update the OrbitControls target to the girl's position
-        // This keeps her in the center of the frame as she moves
         const charPos = this.character.position.clone();
-        charPos.y += 1.6; // Target her head height
+        charPos.y += 1.6; 
         
         const delta = charPos.clone().sub(this.controls.target);
         this.camera.position.add(delta);
