@@ -1,0 +1,17 @@
+{
+  "name": "immersive-void-showcase",
+  "version": "1.0.0",
+  "description": "AR/VR Three.js Showcase",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.183.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}
