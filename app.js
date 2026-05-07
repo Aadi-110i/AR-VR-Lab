@@ -88,7 +88,6 @@ class ImmersiveApp {
 
     loadCharacter() {
         const loader = new GLTFLoader(this.loadingManager);
-        // Using the new walking model
         const modelPath = './96aafe422795b65eb2f93e5ce46da1f4.glb';
 
         loader.load(modelPath, (gltf) => {
@@ -111,26 +110,42 @@ class ImmersiveApp {
             if (gltf.animations && gltf.animations.length > 0) {
                 this.mixer = new THREE.AnimationMixer(this.character);
                 
-                // Assuming first animation is idle and second is walking
-                // Or if it only has one, it might be the walking one.
                 gltf.animations.forEach((clip, index) => {
-                    const name = index === 0 ? 'idle' : 'walk'; // Fallback naming
-                    this.actions[name] = this.mixer.clipAction(clip);
+                    // Try to find idle and walk by name, otherwise fallback to index
+                    let name = clip.name.toLowerCase();
+                    if (name.includes('idle')) name = 'idle';
+                    else if (name.includes('walk') || name.includes('run')) name = 'walk';
+                    else name = index === 0 ? 'idle' : 'walk';
+
+                    const action = this.mixer.clipAction(clip);
+                    action.setLoop(THREE.LoopRepeat); // Ensure it loops
+                    action.clampWhenFinished = false; // Don't stop at end
+                    this.actions[name] = action;
                 });
 
-                // Default to first animation
+                // Set initial action
                 this.activeAction = this.actions['idle'] || Object.values(this.actions)[0];
-                this.activeAction.play();
+                if (this.activeAction) this.activeAction.play();
             }
         });
     }
 
-    fadeToAction(name, duration = 0.2) {
+    fadeToAction(name, duration = 0.5) {
         const nextAction = this.actions[name];
         if (nextAction && nextAction !== this.activeAction) {
-            this.activeAction.fadeOut(duration);
-            nextAction.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(duration).play();
+            const prevAction = this.activeAction;
             this.activeAction = nextAction;
+
+            if (prevAction) {
+                prevAction.fadeOut(duration);
+            }
+
+            this.activeAction
+                .reset()
+                .setEffectiveTimeScale(1)
+                .setEffectiveWeight(1)
+                .fadeIn(duration)
+                .play();
         }
     }
 
@@ -192,9 +207,19 @@ class ImmersiveApp {
 
             // Switch to walk animation if moving
             if (this.actions['walk']) this.fadeToAction('walk');
+            else if (Object.keys(this.actions).length > 1) {
+                // If 'walk' isn't explicitly found, try the second animation
+                const names = Object.keys(this.actions);
+                this.fadeToAction(names[1]);
+            }
         } else {
             // Switch back to idle if stopped
             if (this.actions['idle']) this.fadeToAction('idle');
+            else if (Object.keys(this.actions).length > 0) {
+                // If 'idle' isn't explicitly found, try the first animation
+                const names = Object.keys(this.actions);
+                this.fadeToAction(names[0]);
+            }
         }
 
         const charPos = this.character.position.clone();
